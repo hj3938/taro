@@ -96,7 +96,11 @@ export function parseScript (
   return ast
 }
 
-function buildRender (returned: t.Expression, stateKeys: string[]) {
+function buildRender (
+  returned: t.Expression,
+  stateKeys: string[],
+  propsKeys: string[]
+) {
   const returnStatement: t.Statement[] = [t.returnStatement(returned)]
   if (stateKeys.length) {
     const stateDecl = t.variableDeclaration('const', [
@@ -105,6 +109,18 @@ function buildRender (returned: t.Expression, stateKeys: string[]) {
           t.objectProperty(t.identifier(s), t.identifier(s))
         ) as any),
         t.memberExpression(t.thisExpression(), t.identifier('state'))
+      )
+    ])
+    returnStatement.unshift(stateDecl)
+  }
+
+  if (propsKeys.length) {
+    const stateDecl = t.variableDeclaration('const', [
+      t.variableDeclarator(
+        t.objectPattern(propsKeys.map(s =>
+          t.objectProperty(t.identifier(s), t.identifier(s))
+        ) as any),
+        t.memberExpression(t.thisExpression(), t.identifier('props'))
       )
     ])
     returnStatement.unshift(stateDecl)
@@ -126,6 +142,7 @@ function parsePage (
   componentType?: string
 ) {
   const stateKeys: string[] = []
+  const propsKeys: string[] = []
   const arg = path.get('arguments')[0]
   if (!arg || !arg.isObjectExpression()) {
     return
@@ -158,12 +175,35 @@ function parsePage (
           .get('properties')
           .map(p => p.node)
           .forEach(prop => {
-            if (t.isObjectProperty(prop) && t.isIdentifier(prop.key)) {
-              stateKeys.push(prop.key.name)
+            if (t.isObjectProperty(prop)) {
+              if (t.isStringLiteral(prop.key)) {
+                stateKeys.push(prop.key.value)
+              }
+              if (t.isIdentifier(prop.key)) {
+                stateKeys.push(prop.key.name)
+              }
             }
           })
       }
       return t.classProperty(t.identifier('state'), value.node)
+    }
+    if (name === 'properties') {
+      if (value.isObjectExpression()) {
+        value
+          .get('properties')
+          .map(p => p.node)
+          .forEach(prop => {
+            if (t.isObjectProperty(prop)) {
+              if (t.isStringLiteral(prop.key)) {
+                propsKeys.push(prop.key.value)
+              }
+              if (t.isIdentifier(prop.key)) {
+                propsKeys.push(prop.key.name)
+              }
+            }
+          })
+      }
+      return false
     }
     if (PageLifecycle.has(name)) {
       const lifecycle = PageLifecycle.get(name)!
@@ -196,12 +236,14 @@ function parsePage (
     classBody.push(t.classProperty(t.identifier('config'), json))
   }
 
-  const renderFunc = buildRender(returned, stateKeys)
+  const renderFunc = buildRender(returned, stateKeys, propsKeys)
 
   return t.classDeclaration(
     t.identifier(componentType === 'App' ? 'App' : defaultClassName),
     t.memberExpression(t.identifier('Taro'), t.identifier('Component')),
-    t.classBody(classBody.concat(renderFunc)),
+    t.classBody(
+      (classBody.filter(Boolean) as t.ClassMethod[]).concat(renderFunc)
+    ),
     []
   )
 }
