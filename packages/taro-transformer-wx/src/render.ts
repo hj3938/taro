@@ -500,7 +500,8 @@ export class RenderParser {
                   this.handleJSXElement(jsxElementPath, (options) => {
                     this.handleConditionExpr(options, jsxElementPath)
                   })
-                }
+                },
+                JSXExpressionContainer: this.replaceIdWithTemplate()
               })
             }
             const block = this.finalReturnElement || buildBlockElement()
@@ -669,8 +670,9 @@ export class RenderParser {
       const jsxElementPath = path.parentPath.parentPath
       if (t.isJSXIdentifier(name) && jsxElementPath.isJSXElement()) {
         const componentName = (jsxElementPath.node.openingElement as any).name.name
-        if (name.name === 'key') {
-          if (THIRD_PARTY_COMPONENTS.has(componentName as string)) {
+        const isThirdPartyKey = name.name === 'taroKey'
+        if (name.name === 'key' || isThirdPartyKey) {
+          if (THIRD_PARTY_COMPONENTS.has(componentName as string) && !isThirdPartyKey) {
             return
           }
           const jsx = path.findParent(p => p.isJSXElement())
@@ -1042,7 +1044,14 @@ export class RenderParser {
               if (replacements.has(parent) || (this.renderScope.hasOwnBinding(name) && this.loopCalleeId.has(path.node))) {
                 return
               }
+
               if (stateToBeAssign.has(name) && path.isReferencedIdentifier()) {
+                if (t.isMemberExpression(parent) && t.isIdentifier(parent.property, { name: 'map' })) {
+                  const grandParentPath = path.parentPath.parentPath
+                  if (grandParentPath.isCallExpression() && this.loopComponents.has(grandParentPath)) {
+                    return
+                  }
+                }
                 const replacement = t.memberExpression(
                   t.identifier(item.name),
                   path.node
@@ -1104,7 +1113,7 @@ export class RenderParser {
                     }
                   })
                 } else {
-                  throw codeFrameError(object.loc, '请简化该表达式为标识符或成员表达式')
+                  throw codeFrameError(object.loc, '多层循环中循环的数组只能是一个变量或成员表达式')
                 }
               }
             }
@@ -1249,6 +1258,8 @@ export class RenderParser {
     // })
     .filter(i => !this.loopScopes.has(i))
     .filter(i => !this.templates.has(i))
+    .filter(Boolean)
+
     const classPath = this.renderPath.findParent(isClassDcl) as NodePath<t.ClassDeclaration>
     classPath.node.body.body.unshift(t.classProperty(t.identifier('$usedState'), t.arrayExpression(
       [...new Set(
@@ -1330,18 +1341,20 @@ export class RenderParser {
     this.renderPath.node.body.body.unshift(
       template(`this.__state = arguments[0] || this.state || {};`)(),
       template(`this.__props = arguments[1] || this.props || {};`)(),
-      t.variableDeclaration(
-        'const',
-        [
-          t.variableDeclarator(
-            t.objectPattern(Array.from(this.usedThisProperties).map(p => t.objectProperty(
-              t.identifier(p),
-              t.identifier(p)
-            ) as any)),
-            t.thisExpression()
-          )
-        ]
-      )
+      this.usedThisProperties.size
+        ? t.variableDeclaration(
+          'const',
+          [
+            t.variableDeclarator(
+              t.objectPattern(Array.from(this.usedThisProperties).map(p => t.objectProperty(
+                t.identifier(p),
+                t.identifier(p)
+              ) as any)),
+              t.thisExpression()
+            )
+          ]
+        )
+        : t.emptyStatement()
     )
 
     if (t.isIdentifier(this.renderPath.node.key)) {
